@@ -2,6 +2,13 @@ name: Cinema City IMAX Monitor
 
 on:
   workflow_dispatch:
+    inputs:
+      seed:
+        description: "Register current screenings without sending notifications"
+        required: true
+        default: false
+        type: boolean
+
   schedule:
     - cron: "7,22,37,52 * * * *"
 
@@ -27,6 +34,7 @@ jobs:
         env:
           NOTIFY_DEVICE_ID: ${{ secrets.NOTIFY_DEVICE_ID }}
           NOTIFY_DEVICE_TOKEN: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          SEED_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.seed && '1' || '0' }}
         run: |
           python watch.py
 
