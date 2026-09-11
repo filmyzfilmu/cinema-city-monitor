@@ -357,7 +357,9 @@ def send_notification(event):
 # ============================================================
 
 def main():
-
+ 
+    seed_mode = os.environ.get("SEED_MODE") == "1"
+    
     print("========================================")
     print("Cinema City IMAX Monitor")
     print("========================================")
@@ -393,9 +395,27 @@ def main():
                 f"ERROR while processing {date}: {exc}"
             )
 
-    current_ids = set()
+      current_ids = set()
 
     new_events = []
+
+    for event in all_events:
+
+        event_id = event["id"]
+
+        current_ids.add(event_id)
+
+        if event_id not in seen:
+            new_events.append(event)
+
+    if seed_mode:
+        print("SEED MODE: registering current events without notifications.")
+
+        seen.update(current_ids)
+        save_state(seen)
+
+        print(f"Seeded {len(current_ids)} events.")
+        return
 
     for event in all_events:
 
