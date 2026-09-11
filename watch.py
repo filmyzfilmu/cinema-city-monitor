@@ -9,8 +9,23 @@ from urllib.parse import quote
 
 CINEMA_ID = "1052"
 HORIZON_DAYS = 250
-AUDITORIUM_PATTERN = "imax"
-FILM_PATTERN = ""
+
+# --- IMAX detection -----------------------------------------------------
+# Cinema City's API does NOT reliably tag IMAX screenings the same way in
+# every field. In practice (confirmed against the Praha Flora / cinema 1052
+# API, the same cinema this script targets):
+#   - the "imax" attribute EXISTS in the attribute catalogue but is not
+#     actually applied to events, so filtering on attributeIds alone for
+#     "imax" silently matches nothing.
+#   - IMAX screenings instead show up via the auditorium name (e.g.
+#     "IMAX VOLVO") and/or the "70-mm" attribute for real 70mm prints.
+# To avoid ever missing a screening, an event is treated as a match if
+# EITHER signal is present (OR, not AND). If Cinema City changes one of
+# these in the future, the other still catches it.
+AUDITORIUM_PATTERN = "imax"       # case-insensitive substring of auditorium name; "" disables this check
+ATTRIBUTE_PATTERNS = ["70-mm"]    # case-insensitive attributeIds to treat as a match; [] disables this check
+
+FILM_PATTERN = ""  # case-insensitive substring of film title; "" matches all films
 
 API_BASE = "https://www.cinemacity.cz/cz/data-api-service/v1/quickbook/10101"
 STATE_FILE = Path("state/seen.json")
@@ -40,6 +55,12 @@ def get_available_dates():
     horizon = today.toordinal() + HORIZON_DAYS
     horizon_date = datetime.fromordinal(horizon)
 
+    # Note: we deliberately do NOT pass attr=70-mm here even though the API
+    # supports server-side attribute filtering (and it would cut down the
+    # number of requests significantly). Server-side attr filtering only
+    # matches on attributeIds, which would silently exclude IMAX screenings
+    # that are only identifiable by auditorium name. Fetching everything and
+    # filtering locally is slower but guarantees nothing is missed.
     url = (
         f"{API_BASE}/dates/in-cinema/"
         f"{CINEMA_ID}/until/{horizon_date:%Y-%m-%d}"
@@ -99,7 +120,41 @@ def extract_dates(data):
                     dates.append(str(candidate)[:10])
                     break
 
-    return sorted(set(dates))
+    result = sorted(set(dates))
+
+    if not result:
+        # If Cinema City ever changes the response shape (or has a hiccup),
+        # every parsing branch above falls through to an empty list rather
+        # than raising. That would make the script look "successful" while
+        # silently doing nothing. Surface it loudly instead.
+        print(
+            "WARNING: parsed zero available dates from the API response. "
+            "This usually means the Cinema City API response shape has "
+            "changed and the parser needs updating -- it should NOT "
+            "normally be zero."
+        )
+
+    return result
+
+
+def matches_target_screening(auditorium, attrs):
+    auditorium_lower = (auditorium or "").lower()
+    attrs_lower = {str(a).lower() for a in (attrs or [])}
+
+    auditorium_match = bool(AUDITORIUM_PATTERN) and (
+        AUDITORIUM_PATTERN.lower() in auditorium_lower
+    )
+
+    attribute_match = bool(ATTRIBUTE_PATTERNS) and any(
+        pattern.lower() in attrs_lower
+        for pattern in ATTRIBUTE_PATTERNS
+    )
+
+    if not AUDITORIUM_PATTERN and not ATTRIBUTE_PATTERNS:
+        # Both checks disabled on purpose -- match everything.
+        return True
+
+    return auditorium_match or attribute_match
 
 
 def get_events_for_date(date):
@@ -155,12 +210,10 @@ def get_events_for_date(date):
             event.get("auditorium") or ""
         )
 
-        if AUDITORIUM_PATTERN:
-            if (
-                AUDITORIUM_PATTERN.lower()
-                not in auditorium.lower()
-            ):
-                continue
+        attrs = event.get("attributeIds", []) or []
+
+        if not matches_target_screening(auditorium, attrs):
+            continue
 
         if FILM_PATTERN:
             if (
@@ -174,16 +227,22 @@ def get_events_for_date(date):
         if not event_id:
             continue
 
+        # Prefer the API's own working booking link. The previously used
+        # tickets.cinemacity.cz/order/... URL scheme is obsolete and returns
+        # HTTP 404 -- the current booking flow goes through booking-router.
+        booking_link = event.get("bookingRouterLaunchLink") or (
+            f"https://www.cinemacity.cz/cz/booking-router/launch/"
+            f"{quote(str(event_id))}?lang=cs"
+        )
+
         result.append({
             "id": str(event_id),
             "film": film_name,
             "filmLink": film.get("link"),
             "datetime": event.get("eventDateTime"),
             "auditorium": auditorium,
-            "attrs": event.get("attributeIds", []),
-            "presentationCode": event.get(
-                "presentationCode"
-            ),
+            "attrs": attrs,
+            "bookingLink": booking_link,
             "soldOut": bool(
                 event.get("soldOut")
             ),
@@ -261,22 +320,7 @@ def send_notification(event):
             "NOTIFY_DEVICE_TOKEN is missing."
         )
 
-    event_id = event["id"]
-    presentation = event.get(
-        "presentationCode"
-    )
-
-    if presentation:
-        booking_url = (
-            "https://tickets.cinemacity.cz/order/"
-            + quote(str(presentation))
-        )
-
-    else:
-        booking_url = (
-            "https://tickets.cinemacity.cz/order/"
-            + quote(str(event_id))
-        )
+    booking_url = event["bookingLink"]
 
     attrs = event.get("attrs") or []
 
@@ -469,6 +513,11 @@ def main():
         f"{len(new_events)}"
     )
 
+    # Notify per-event, but don't let one failed notification (a brief
+    # outage or rate limit on the push service) take down the whole run.
+    # If we let an exception propagate here, save_state() below never
+    # executes, and any events already notified in this loop would be
+    # notified AGAIN next run because they were never marked "seen".
     for event in sorted(
         new_events,
         key=lambda e: (
@@ -484,9 +533,17 @@ def main():
             event.get("auditorium")
         )
 
-        send_notification(
-            event
-        )
+        try:
+            send_notification(
+                event
+            )
+
+        except Exception as exc:
+            print(
+                f"ERROR sending notification for "
+                f"{event['id']}: {exc}"
+            )
+            continue
 
         seen.add(
             event["id"]
