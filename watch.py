@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 
 CINEMA_ID = "1052"
-HORIZON_DAYS = 180
+HORIZON_DAYS = 250
 AUDITORIUM_PATTERN = "imax"
 FILM_PATTERN = ""
 
