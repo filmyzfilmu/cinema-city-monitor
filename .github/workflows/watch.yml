@@ -15,6 +15,15 @@ on:
 permissions:
   contents: write
 
+# Prevents two runs from overlapping. Without this, if a run ever takes
+# longer than 15 minutes (slow API, retries), the next scheduled run could
+# start before the previous one finishes and pushes its state -- the second
+# run's "git push" would then fail on a non-fast-forward error, and its
+# state update would be lost, risking duplicate notifications next time.
+concurrency:
+  group: cinema-city-monitor
+  cancel-in-progress: false
+
 jobs:
   watch:
     runs-on: ubuntu-latest
