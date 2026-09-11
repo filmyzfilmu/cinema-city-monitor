@@ -14,7 +14,7 @@ from urllib.parse import quote
 CINEMA_ID = "1052"
 
 # How far into the future should we look?
-HORIZON_DAYS = 180
+HORIZON_DAYS = 250
 
 # Only notify for screenings in an auditorium containing this text.
 AUDITORIUM_PATTERN = "imax"
