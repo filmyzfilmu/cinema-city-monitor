@@ -9,8 +9,10 @@ on:
         default: false
         type: boolean
 
-  schedule:
-    - cron: "7,22,37,52 * * * *"
+# GitHub's own `schedule:` trigger has been removed on purpose -- an
+# external cron-job.org job now triggers this workflow via workflow_dispatch
+# on a precise schedule instead. Keeping only one trigger source avoids
+# redundant duplicate runs piling up in the concurrency queue.
 
 permissions:
   contents: write
@@ -20,9 +22,19 @@ permissions:
 # start before the previous one finishes and pushes its state -- the second
 # run's "git push" would then fail on a non-fast-forward error, and its
 # state update would be lost, risking duplicate notifications next time.
+#
+# queue: max is essential here: without it, GitHub only allows ONE run to
+# be queued/waiting at a time per group. If a new trigger arrives while an
+# earlier one is still waiting for a free runner (not yet started), GitHub
+# cancels the older waiting run outright ("higher priority waiting request
+# exists") instead of queuing it -- and if triggers keep arriving faster
+# than runners pick jobs up, every run can get cancelled before it ever
+# starts. queue: max instead lets up to 100 triggered runs wait in line and
+# run one after another in order, so none of them get dropped.
 concurrency:
   group: cinema-city-monitor
   cancel-in-progress: false
+  queue: max
 
 jobs:
   watch:
