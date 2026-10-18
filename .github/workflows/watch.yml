@@ -57,7 +57,11 @@ jobs:
         with:
           python-version: "3.x"
 
+      # Fails (red) if watch.py finds a problem: Cinema City unreachable,
+      # its data format changed, IMAX hall not found, notifications failing.
+      # The reason is shown at the top of the run's page on GitHub.
       - name: Run Cinema City monitor
+        id: monitor
         env:
           NOTIFY_DEVICE_ID: ${{ secrets.NOTIFY_DEVICE_ID }}
           NOTIFY_DEVICE_TOKEN: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
@@ -65,7 +69,11 @@ jobs:
         run: |
           python watch.py
 
+      # Runs even when the monitor step above failed, so notifications that
+      # WERE sent before the problem are still recorded and never repeated.
+      # (Skipped only if the run was cancelled or the monitor never started.)
       - name: Save state
+        if: ${{ !cancelled() && steps.monitor.outcome != 'skipped' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -79,3 +87,21 @@ jobs:
 
           git commit -m "Update Cinema City monitor state"
           git push
+
+      # Heartbeat: tells healthchecks.io "the monitor is alive and healthy".
+      # This step only runs when EVERY step above succeeded. If runs keep
+      # failing -- or stop happening at all (stuck queue, expired token,
+      # cron-job.org down) -- the pings stop, and healthchecks.io emails you.
+      - name: Send heartbeat to healthchecks.io
+        env:
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+        run: |
+          if [ -z "$HEALTHCHECK_URL" ]; then
+            echo "HEALTHCHECK_URL secret is not set -- skipping heartbeat."
+            exit 0
+          fi
+
+          # If healthchecks.io itself is briefly down, don't fail the run.
+          curl -fsS -m 10 --retry 5 -o /dev/null "$HEALTHCHECK_URL" \
+            && echo "Heartbeat sent." \
+            || echo "::warning::Could not reach healthchecks.io for the heartbeat."
